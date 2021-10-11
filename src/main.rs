@@ -1,4 +1,4 @@
-use lopdf::Document;
+use lopdf::{Document, Stream};
 use encoding_rs::{WINDOWS_1252, Decoder, DecoderResult};
 use std::error::Error;
 use std::collections::HashMap;
@@ -36,9 +36,23 @@ fn main() {
     // 	println!("{}", "----------------------------------");
     // }
 
-    let mut current = streams[1].clone();
-    current.decompress();
-    let current = current.decode_content().unwrap();
+    let mut stream = streams[1].clone();
+    stream.decompress();
+    let stream = stream.decode_content().unwrap();
+
+
+    let x_borders;
+    let y_borders;
+    let texts;
+
+    {
+        let objects = extract_objects(&mut streams[1].clone());
+        x_borders = objects.0.clone().drain(..).map(|l| l.0.x).collect::<Vec<i64>>();
+        y_borders = objects.1.clone().drain(..).map(|l| l.0.y).collect::<Vec<i64>>();
+        texts = objects.2;
+    }
+
+    //TODO put text into corresponding columns
 
     // let date_bytes = current.operations
     //     .iter()
@@ -51,14 +65,28 @@ fn main() {
     //
     // let date = WINDOWS_1252.decode(date_bytes).0;
 
-    let mut texts = Vec::new();
-    let mut horizontal_lines = Vec::new();
-    let mut vertical_lines = Vec::new();
 
-    for (i, op) in current.operations.iter().enumerate() {
+
+    // println!("number of horizontal lines: {}", x_lines.len());
+    // println!("number of vertical lines: {}", y_lines.len());
+}
+
+fn extract_objects(stream: &mut Stream) -> (Vec<Line>, Vec<Line>, Vec<Text>) {
+    stream.decompress();
+    let stream = stream.decode_content().unwrap();
+
+    let mut texts = Vec::new();
+    let mut lines = Vec::new();
+    // let mut horizontal_lines = Vec::new();
+    // let mut vertical_lines = Vec::new();
+
+
+    //find all Tj's and their position through the previous Td's and put them as a Text struct in an array
+    //find all l's and their position through the previous m's and put them as a Line struct in an array
+    for (i, op) in stream.operations.iter().enumerate() {
         match op.operator.as_str() {
             "Tj" => {
-                let td = &current.operations[i - 1];
+                let td = &stream.operations[i - 1];
 
                 if td.operator == "Td" {
                     let td_ops = &td.operands;
@@ -76,7 +104,7 @@ fn main() {
                 }
             },
             "l" => {
-                let m = &current.operations[i - 1];
+                let m = &stream.operations[i - 1];
 
                 if m.operator == "m" {
                     let m_ops = &m.operands;
@@ -86,15 +114,17 @@ fn main() {
 
                     let end = Point::new((l_ops[0].as_f64().unwrap() as i64), (l_ops[1].as_f64().unwrap() as i64));
 
-                    let array = if (start.y - end.y as i64) == 0 {
-                        &mut horizontal_lines
-                    } else if (start.x - end.x) == 0 {
-                        &mut vertical_lines
-                    } else {
-                        panic!("{}", "ERROR: line is diagonal")
-                    };
+                    // let array = if (start.y - end.y as i64) == 0 {
+                    //     &mut horizontal_lines
+                    // } else if (start.x - end.x) == 0 {
+                    //     &mut vertical_lines
+                    // } else {
+                    //     panic!("{}", "ERROR: line is diagonal")
+                    // };
+                    //
+                    // array.push(Line::new(start, end));
 
-                    array.push(Line::new(start, end));
+                    lines.push(Line::new(start, end));
                 } else {
                     println!("{}", "ERROR: m expected before l");
                 }
@@ -103,26 +133,45 @@ fn main() {
         }
     }
 
-    let mut start_to_end = HashMap::new();
+    let mut x_lines = HashMap::new();
+    let mut y_lines = HashMap::new();
 
-    for line in horizontal_lines {
-        start_to_end.insert(line.0, line.1);
+    for line in lines {
+        if line.1.y == line.0.y {
+            x_lines.entry(line.0.y).and_modify(|y: &mut Vec<i64>| {
+                y.push(line.0.x);
+                y.push(line.1.x)
+            }).or_insert(Vec::new());
+        } else if line.1.x == line.0.x {
+            y_lines.entry(line.0.x).and_modify(|y: &mut Vec<i64>| {
+                y.push(line.0.y);
+                y.push(line.1.y)
+            }).or_insert(Vec::new());
+        } else {
+            panic!("{}", "ERROR: line is diagonal")
+        };
     }
 
-    let mut to_remove = Vec::new();
+    let x_lines = x_lines.iter().map(|l| {
+        let start = Point::new(*l.0, *l.1.iter().min().unwrap());
+        let end = Point::new(*l.0, *l.1.iter().max().unwrap());
 
-    for start in start_to_end.keys() {
-        let end = start_to_end.get(start).unwrap();
-        if let Some(new_end) = start_to_end.get(end) {
-            to_remove.push(end);
+        Line::new(start, end)
+    }).collect::<Vec<Line>>();
 
-            let point = start_to_end.get_mut(start).unwrap();
-            point.x = new_end.x;
-            point.y = new_end.y;
-        }
-    }
+    let mut y_lines = y_lines.iter().map(|l| {
+        let start = Point::new(*l.1.iter().min().unwrap(), *l.0);
+        let end = Point::new(*l.1.iter().max().unwrap(), *l.0);
 
-    //TODO remove all with to_remove
+        Line::new(start, end)
+    }).collect::<Vec<Line>>();
+
+    //catch the wired sub divisions in the cells
+    let y_lines = y_lines.drain(..)
+        .filter(|l| (l.len() > ((l.len() / x_lines.len() as i64) + 100)))
+        .collect::<Vec<Line>>();
+
+    (x_lines, y_lines, texts)
 }
 
 struct Text {
@@ -139,6 +188,7 @@ impl Text {
     }
 }
 
+#[derive(Debug)]
 struct Line(Point, Point);
 
 impl Line {
@@ -146,12 +196,15 @@ impl Line {
         Self(p1, p2)
     }
 
-    fn set_end(&mut self, p1: Point) {
-        self.1 = p1;
+    fn len(&self) -> i64 {
+        (
+            ((self.1.x - self.0.x) as f64).powi(2) +
+            ((self.1.y - self.0.y) as f64).powi(2)
+        ).sqrt() as i64
     }
 }
 
-#[derive(Eq, PartialEq, Hash, Clone)]
+#[derive(Eq, PartialEq, Hash, Clone, Debug)]
 struct Point {
     x: i64,
     y: i64,
