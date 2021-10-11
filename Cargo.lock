@@ -308,6 +308,9 @@ name = "serde"
 version = "1.0.130"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f12d06de37cf59146fbdecab66aa99f9fe4f78722e3607577a5375d66bd0c913"
+dependencies = [
+ "serde_derive",
+]
 
 [[package]]
 name = "serde_derive"
@@ -471,8 +474,12 @@ checksum = "5fecdca9a5291cc2b8dcf7dc02453fee791a280f3743cb0905f8822ae463b3fe"
 name = "vertretungsplan_extractor"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "encoding_rs",
+ "log",
  "lopdf",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
