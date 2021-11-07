@@ -200,34 +200,60 @@ impl SubstitutionSchedule {
         let stream = stream.decode_content().unwrap();
 
 
-        let mut x_borders;
         let mut y_borders;
+        let mut x_borders;
         let mut texts;
 
         {
-            let objects = Self::extract_objects(&mut streams[1].clone())?;
-            x_borders = objects.0.clone().drain(..).map(|l| l.0.x).collect::<Vec<i64>>();
-            y_borders = objects.1.clone().drain(..).map(|l| l.0.y).collect::<Vec<i64>>();
+            let mut objects = Self::extract_objects(&mut streams[0].clone())?;
+
+            if objects.0.len() != 7 {
+                panic!("misscounted horizontal lines, counted: {}. But they should be 7", objects.0.len())
+            }
+
+            y_borders = objects.0.drain(..).map(|l| l.0.x).collect::<Vec<i64>>();
+            x_borders = objects.1.drain(..).map(|l| l.0.y).collect::<Vec<i64>>();
             texts = objects.2;
         }
 
-        x_borders.sort();
         y_borders.sort();
+        y_borders.reverse();
+        x_borders.sort();
 
-        let mut columns = vec![vec![Vec::new(); x_borders.len()]; y_borders.len()];
-        //columns.repeat();
+        // let mut columns = vec![vec![Vec::new(); x_borders.len()]; y_borders.len()];
+        // //columns.repeat();
+        //
+        // let texts = texts[3..].to_vec();
+        //
+        // for text in &texts {
+        //     for (x_index, x_border) in x_borders.iter().enumerate() {
+        //         if text.position.y > *x_border {
+        //             for (y_index, y_border) in y_borders.iter().enumerate() {
+        //                 if text.position.x < *y_border {
+        //                     columns[y_index][x_borders.len() - 1 - x_index].push(text);
+        //                     break
+        //                 }
+        //             }
+        //         }
+        //     }
+        // }
 
-        let texts = texts[3..].to_vec();
+        println!("{:?}", y_borders);
+        println!("{:?}", x_borders);
+
+        let mut columns = vec![vec![Vec::new(); 7]; x_borders.len() - 1];
 
         for text in &texts {
             for (x_index, x_border) in x_borders.iter().enumerate() {
-                if text.position.y > *x_border {
+                if text.position.x < *x_border {
+                    //columns[x_index][]
                     for (y_index, y_border) in y_borders.iter().enumerate() {
-                        if text.position.x < *y_border {
-                            columns[y_index][x_borders.len() - 1 - x_index].push(text);
+                        if text.position.y > *y_border {
+                            columns[x_index - 1][y_index].push(&text.text);
                             break
                         }
                     }
+                    break
                 }
             }
         }
