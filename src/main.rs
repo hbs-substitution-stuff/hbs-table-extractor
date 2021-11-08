@@ -205,10 +205,11 @@ impl SubstitutionSchedule {
         let mut texts;
 
         {
-            let mut objects = Self::extract_objects(&mut streams[0].clone())?;
+            let mut table_objects = Self::extract_table_objects(&mut streams[0].clone())?;
+            let mut objects = table_objects.remove(0);
 
             if objects.0.len() != 7 {
-                panic!("misscounted horizontal lines, counted: {}. But they should be 7", objects.0.len())
+                panic!("horizontal lines should be exactly 7, got {}", objects.0.len())
             }
 
             y_borders = objects.0.drain(..).map(|l| l.0.x).collect::<Vec<i64>>();
@@ -267,8 +268,8 @@ impl SubstitutionSchedule {
         todo!()
         //TODO put text into corresponding columns
     }
-
-    fn extract_objects(stream: &mut Stream) -> Result<(Vec<Line>, Vec<Line>, Vec<Text>), Box<dyn std::error::Error>> {
+    // -> [(y_lines, x_lines, texts)]
+    fn extract_table_objects(stream: &mut Stream) -> Result<Vec<(Vec<Line>, Vec<Line>, Vec<Text>)>, Box<dyn std::error::Error>> {
         stream.decompress();
         let stream = stream.decode_content().unwrap();
 
@@ -319,35 +320,49 @@ impl SubstitutionSchedule {
             }
         }
 
-        let mut x_lines = HashMap::new();
         let mut y_lines = HashMap::new();
+        let mut x_lines = Vec::new();
 
-        for line in lines {
+
+
+        for line in lines.drain(..) {
             if line.1.y == line.0.y {
-                x_lines.entry(line.0.y).and_modify(|y: &mut Vec<i64>| {
+                y_lines.entry(line.0.y).and_modify(|y: &mut Vec<i64>| {
                     y.push(line.0.x);
                     y.push(line.1.x)
                 }).or_insert(Vec::new());
             } else if line.1.x == line.0.x {
-                y_lines.entry(line.0.x).and_modify(|y: &mut Vec<i64>| {
-                    y.push(line.0.y);
-                    y.push(line.1.y)
-                }).or_insert(Vec::new());
+                x_lines.push(line)
             } else {
                 return Err("While parsing pdf: line is diagonal".into())
             };
-        }
+        };
 
-        let x_lines = x_lines.iter().map(|l| {
-            let start = Point::new(*l.0, *l.1.iter().min().unwrap());
-            let end = Point::new(*l.0, *l.1.iter().max().unwrap());
+        let mut y_lines = x_lines.iter().map(|l| {
+            let start = Point::new(*l.1.iter().min().unwrap(), *l.0);
+            let end = Point::new(*l.1.iter().max().unwrap(), *l.0);
 
             Line::new(start, end)
         }).collect::<Vec<Line>>();
 
-        let mut y_lines = y_lines.iter().map(|l| {
-            let start = Point::new(*l.1.iter().min().unwrap(), *l.0);
-            let end = Point::new(*l.1.iter().max().unwrap(), *l.0);
+        if y_lines.len() % 7 {
+            panic!("horizontal lines should be a multiple of 7, got {}", objects.0.len())
+        }
+
+        y_lines.sort();
+
+        let y_lines_tables = y_lines.chunks(7).collect::<Vec<Vec<Line>>>();
+
+        for y_lines in y_lines_tables {
+            y_lines..max() + 14;
+            y_lines.min();
+        }
+
+
+
+        let x_lines = y_lines.iter().map(|l| {
+            let start = Point::new(*l.0, *l.1.iter().min().unwrap());
+            let end = Point::new(*l.0, *l.1.iter().max().unwrap());
 
             Line::new(start, end)
         }).collect::<Vec<Line>>();
@@ -400,6 +415,10 @@ impl Line {
             ((self.1.x - self.0.x) as f64).powi(2) +
             ((self.1.y - self.0.y) as f64).powi(2)
         ).sqrt() as i64
+    }
+
+    fn between_horizontal_lines(&self, top: i64, bottom: i64) -> bool {
+        self.0.y < top && self.1.y < top && self.0.y > bottom && self.1.y > bottom
     }
 }
 
