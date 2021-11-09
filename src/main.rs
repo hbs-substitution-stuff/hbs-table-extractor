@@ -1,3 +1,5 @@
+mod pdf_parser;
+
 use lopdf::{Document, Stream};
 use encoding_rs::{WINDOWS_1252, Decoder, DecoderResult};
 use std::error::Error;
@@ -269,14 +271,13 @@ impl SubstitutionSchedule {
         //TODO put text into corresponding columns
     }
     // -> [(y_lines, x_lines, texts)]
-    fn extract_table_objects(stream: &mut Stream) -> Result<Vec<(Vec<Line>, Vec<Line>, Vec<Text>)>, Box<dyn std::error::Error>> {
+    fn extract_objects(stream: &mut Stream) -> Result<Vec<Line>, Vec<Text>)>, Box<dyn std::error::Error>> {
         stream.decompress();
         let stream = stream.decode_content().unwrap();
 
         let mut texts = Vec::new();
+        //let mut lines = Vec::new();
         let mut lines = Vec::new();
-        // let mut horizontal_lines = Vec::new();
-        // let mut vertical_lines = Vec::new();
 
 
         //find all Tj's and their position through the previous Td's and put them as a Text struct in an array
@@ -308,10 +309,19 @@ impl SubstitutionSchedule {
                         let m_ops = &m.operands;
                         let l_ops = &op.operands;
 
-                        let start = Point::new((m_ops[0].as_f64().unwrap() as i64), (m_ops[1].as_f64().unwrap() as i64));
-                        let end = Point::new((l_ops[0].as_f64().unwrap() as i64), (l_ops[1].as_f64().unwrap() as i64));
+                        let start = Point {
+                            x: m_ops[0].as_f64().unwrap() as i64,
+                            y: m_ops[1].as_f64().unwrap() as i64
+                        };//Point::new((m_ops[0].as_f64().unwrap() as i64), (m_ops[1].as_f64().unwrap() as i64));
+                        let end = Point {
+                            x: l_ops[0].as_f64().unwrap() as i64,
+                            y: l_ops[1].as_f64().unwrap() as i64,
+                        };//Point::new((l_ops[0].as_f64().unwrap() as i64), (l_ops[1].as_f64().unwrap() as i64));
 
-                        lines.push(Line::new(start, end));
+                        lines.push(Line {
+                            0: start,
+                            1: end,
+                        })
                     } else {
                         return Err("While parsing pdf: m expected before l".into());
                     }
@@ -320,59 +330,84 @@ impl SubstitutionSchedule {
             }
         }
 
-        let mut y_lines = HashMap::new();
-        let mut x_lines = Vec::new();
-
-
-
-        for line in lines.drain(..) {
-            if line.1.y == line.0.y {
-                y_lines.entry(line.0.y).and_modify(|y: &mut Vec<i64>| {
-                    y.push(line.0.x);
-                    y.push(line.1.x)
-                }).or_insert(Vec::new());
-            } else if line.1.x == line.0.x {
-                x_lines.push(line)
-            } else {
-                return Err("While parsing pdf: line is diagonal".into())
-            };
-        };
-
-        let mut y_lines = x_lines.iter().map(|l| {
-            let start = Point::new(*l.1.iter().min().unwrap(), *l.0);
-            let end = Point::new(*l.1.iter().max().unwrap(), *l.0);
-
-            Line::new(start, end)
-        }).collect::<Vec<Line>>();
-
-        if y_lines.len() % 7 {
-            panic!("horizontal lines should be a multiple of 7, got {}", objects.0.len())
-        }
-
-        y_lines.sort();
-
-        let y_lines_tables = y_lines.chunks(7).collect::<Vec<Vec<Line>>>();
-
-        for y_lines in y_lines_tables {
-            y_lines..max() + 14;
-            y_lines.min();
-        }
-
-
-
-        let x_lines = y_lines.iter().map(|l| {
-            let start = Point::new(*l.0, *l.1.iter().min().unwrap());
-            let end = Point::new(*l.0, *l.1.iter().max().unwrap());
-
-            Line::new(start, end)
-        }).collect::<Vec<Line>>();
-
-        //catch the wired sub divisions in the cells
-        let y_lines = y_lines.drain(..)
-            .filter(|l| (l.len() > ((l.len() / x_lines.len() as i64) + 100)))
-            .collect::<Vec<Line>>();
-
-        Ok((x_lines, y_lines, texts))
+        lines
+        //
+        // let mut horizontal_lines_concat;
+        //
+        // {
+        //     horizontal_lines_concat  = HashMap::new();
+        //
+        //     for line in horizontal_lines.drain(..) {
+        //         horizontal_lines_concat.entry(line.0.y)
+        //             .and_modify(|y: &mut Vec<i64>| {
+        //                 y.push(line.0.x);
+        //                 y.push(line.1.x)
+        //             }).or_insert(Vec::new());
+        //     }
+        // }
+        //
+        // let horizontal_lines = horizontal_lines
+        //
+        //
+        // let mut h_lines = HashMap::new();
+        // let mut v_lines = Vec::new();
+        //
+        //
+        //
+        // for line in lines.drain(..) {
+        //     if line.1.y == line.0.y {
+        //         y_lines.entry(line.0.y).and_modify(|y: &mut Vec<i64>| {
+        //             y.push(line.0.x);
+        //             y.push(line.1.x)
+        //         }).or_insert(Vec::new());
+        //     } else if line.1.x == line.0.x {
+        //         x_lines.push(line)
+        //     } else {
+        //         return Err("While parsing pdf: line is diagonal".into())
+        //     };
+        // };
+        //
+        // let mut y_lines = x_lines.iter().map(|l| {
+        //     let start = Point::new(*l.1.iter().min().unwrap(), *l.0);
+        //     let end = Point::new(*l.1.iter().max().unwrap(), *l.0);
+        //
+        //     Line::new(start, end)
+        // }).collect::<Vec<Line>>();
+        //
+        // if y_lines.len() % 7 {
+        //     panic!("horizontal lines should be a multiple of 7, got {}", objects.0.len())
+        // }
+        //
+        // y_lines.sort();
+        //
+        // let y_lines_tables = y_lines.chunks(7).collect::<Vec<Vec<Line>>>();
+        //
+        // let x_lines_tables = vec![Vec::new(); y_lines_tables.len()];
+        //
+        // for (index, y_lines) in y_lines_tables.iter().enumerate() {
+        //     let top = y_lines.iter().map(|l| l.0.y).max() + 14;
+        //     let bottom = y_lines.iter().map(|l| l.0.y).min();
+        //
+        //     for x_line in x_lines.iter().drain() {
+        //
+        //     }
+        // }
+        //
+        //
+        //
+        // let x_lines = y_lines.iter().map(|l| {
+        //     let start = Point::new(*l.0, *l.1.iter().min().unwrap());
+        //     let end = Point::new(*l.0, *l.1.iter().max().unwrap());
+        //
+        //     Line::new(start, end)
+        // }).collect::<Vec<Line>>();
+        //
+        // //catch the wired sub divisions in the cells
+        // let y_lines = y_lines.drain(..)
+        //     .filter(|l| (l.len() > ((l.len() / x_lines.len() as i64) + 100)))
+        //     .collect::<Vec<Line>>();
+        //
+        // Ok((x_lines, y_lines, texts))
     }
 }
 
@@ -385,6 +420,11 @@ impl Display for SubstitutionSchedule {
 fn main() {
     let subs = SubstitutionSchedule::from_pdf_native("./VertretungsplanA4_Dienstag.pdf");
 
+}
+
+enum Border {
+    Horizontal(i64),
+    Vertical(i64),
 }
 
 #[derive(Clone, Debug)]
@@ -402,6 +442,11 @@ impl Text {
     }
 }
 
+enum Orientation {
+    Horizontal,
+    Vertical,
+}
+
 #[derive(Debug, Clone)]
 struct Line(Point, Point);
 
@@ -415,6 +460,16 @@ impl Line {
             ((self.1.x - self.0.x) as f64).powi(2) +
             ((self.1.y - self.0.y) as f64).powi(2)
         ).sqrt() as i64
+    }
+
+    fn orientation(&self) -> Result<Orientation, Box<dyn Error>> {
+        if self.0.x - self.1.x == 0 {
+            Ok(Orientation::Horizontal)
+        } else if self.0.y - self.1.y == 0 {
+            Ok(Orientation::Vertical)
+        } else {
+            Err("line is diagonal".into())
+        }
     }
 
     fn between_horizontal_lines(&self, top: i64, bottom: i64) -> bool {
