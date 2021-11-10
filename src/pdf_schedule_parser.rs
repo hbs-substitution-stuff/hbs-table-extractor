@@ -71,11 +71,6 @@ impl PdfScheduleParser {
 	}
 
 	fn extract_date(&self) -> Result<i64, Box<dyn Error>> {
-		// let date_idx_start = pdf.find("Datum: ").ok_or("date not found")?;
-		// let date_idx_end = pdf[date_idx_start..].find('\n').ok_or("date end not found")? + date_idx_start;
-
-    	//TODO chrono::NaiveDateTime::parse_from_str(s: &str, fmt: &str) (done)
-
 		let date_string = self.pages.iter()
 			.map(|p| p.texts)
 			.map(|t| {
@@ -92,21 +87,6 @@ impl PdfScheduleParser {
 			chrono::NaiveDateTime::parse_from_str(&date_string[date_begin..], "%d.%m.%Y")?
 				.timestamp_millis()
 		)
-
-		// let date_str: Vec<u32> = pdf[date_idx_start..date_idx_end].split(", ")
-		// 	.last()
-		// 	.ok_or("date string has no ','")?
-		// 	.split('.')
-		// 	.collect::<Vec<&str>>()
-		// 	.iter()
-		// 	.map(|s| (*s).parse::<u32>().unwrap())
-		// 	.collect();
-
-		// #[allow(clippy::cast_possible_wrap)]
-		// Ok(chrono::Date::<Local>::from_utc(
-		// 	NaiveDate::from_ymd(date_str[2] as i32, date_str[1], date_str[0]),
-		// 	Utc.fix(),
-		// ).and_hms(0, 0, 0).timestamp())
 	}
 }
 
@@ -120,26 +100,16 @@ impl TableObjects {
 
 		for line in objects.lines {
 		    if line.start.y == line.end.y {
-		        //horizontal_borders.push(line.start.y)
 				horizontal_borders.entry(line.start.y).and_modify(|x: &mut Vec<i64>| {
 					x.push(line.start.x);
 					x.push(line.end.x)
 				}).or_insert(Vec::new());
 		    } else if line.start.x == line.end.x {
 		        vertical_borders.push(line.start.y)
-				// vertical_borders.entry(line.start.x).and_modify(|y: &mut Vec<i64>| {
-				// 	y.push(line.start.y);
-				// 	y.push(line.end.y)
-				// }).or_insert(Vec::new());
 		    } else {
 		        return Err("While parsing pdf: line is diagonal".into())
 		    };
 		};
-
-		//TODO concatenate the fragmented lines possibly with a hashmap
-		// let mut vertical_borders = vertical_borders.iter()
-		// 	.map(find_points)
-		// 	.collect::<Vec<Line>>();
 
 		let mut horizontal_borders = horizontal_borders.iter()
 			.map(|l| {
@@ -148,10 +118,6 @@ impl TableObjects {
 				Line::new(start, end)
 			})
 			.collect::<Vec<Line>>();
-
-		//TODO get rid of the random short dividers within some cells. Possibly by grouping them by
-		// length and removing the groups which don't add to a multiple of 7 and by checking if they
-		// are on top of one of another.
 
 		let max_length = horizontal_borders.iter()
 			.map(|l| l.len())
@@ -225,9 +191,14 @@ impl PageStream {
 						let td_ops = &td.operands;
 						let tj_ops = &op.operands;
 						//TODO maybe use Document::decode_text();
-						let text = WINDOWS_1252.decode(tj_ops[0].as_str().unwrap()).0
-							.parse()
-							.unwrap();
+						// let text = WINDOWS_1252.decode(tj_ops[0].as_str().unwrap()).0
+						// 	.parse()
+						// 	.unwrap();
+
+						let text = Document::decode_text(
+							Some("WinAnsiEncoding"),
+							tj_ops[0].as_str().unwrap()
+						);
 
 						let position = Point {
 							x: td_ops[0].as_f64().unwrap() as i64,
@@ -277,12 +248,22 @@ impl PageStream {
 		})
 	}
 
-	fn extract_table_objects(&self) -> Vec<(Vec<Line>, Vec<Text>)> {
+	fn extract_table_objects(&self) -> Vec<TableObjects> {
 		//TODO get the regions of the tables, by finding the coordinates of the "Block" text and
 		// use it to divide the lines on the page. Maybe even find the line below
 		// '5:  15:15\n- 16:45' as the second divider
 
+		let top_string_positions = self.texts.iter()
+			.filter(|t| t.text == "Block")
+			.map(|t| t.position)
+			.collect::<Vec<Point>>();
 
+		let bottom_string_positions = self.texts.iter()
+			.filter("5:  15:15\n- 16:45")
+			.map(|t| t.position)
+			.collect::<Vec<Point>>();
+
+		//TODO find every line that intersects with a line going from block and then choosing the closest
 
 		todo!()
 	}
