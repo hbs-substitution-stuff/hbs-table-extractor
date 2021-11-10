@@ -63,6 +63,8 @@ impl PdfScheduleParser {
 	fn extract_date(&self) -> Result<i64, Box<dyn Error>> {
 		let date_idx_start = pdf.find("Datum: ").ok_or("date not found")?;
 		let date_idx_end = pdf[date_idx_start..].find('\n').ok_or("date end not found")? + date_idx_start;
+    
+    //TODO chrono::NaiveDateTime::parse_from_str(s: &str, fmt: &str)
 
 		let date_str: Vec<u32> = pdf[date_idx_start..date_idx_end].split(", ")
 			.last()
