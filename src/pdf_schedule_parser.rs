@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::Path;
 use encoding_rs::WINDOWS_1252;
@@ -38,6 +39,15 @@ struct TableObjects {
 	texts: Vec<Text>,
 }
 
+impl Line {
+	fn len(&self) -> i64 {
+		(
+			((self.end.x - self.start.x) as f64).powi(2) +
+			((self.end.y - self.start.y) as f64).powi(2)
+		).sqrt() as i64
+	}
+}
+
 impl PdfScheduleParser {
 	pub(crate) fn new<T: AsRef<Path> + AsRef<OsStr>>(path: T) -> Result<Self, Box<dyn std::error::Error>> {
 		let document = Document::load(path).unwrap();
@@ -61,25 +71,42 @@ impl PdfScheduleParser {
 	}
 
 	fn extract_date(&self) -> Result<i64, Box<dyn Error>> {
-		let date_idx_start = pdf.find("Datum: ").ok_or("date not found")?;
-		let date_idx_end = pdf[date_idx_start..].find('\n').ok_or("date end not found")? + date_idx_start;
-    
-    //TODO chrono::NaiveDateTime::parse_from_str(s: &str, fmt: &str)
+		// let date_idx_start = pdf.find("Datum: ").ok_or("date not found")?;
+		// let date_idx_end = pdf[date_idx_start..].find('\n').ok_or("date end not found")? + date_idx_start;
 
-		let date_str: Vec<u32> = pdf[date_idx_start..date_idx_end].split(", ")
-			.last()
-			.ok_or("date string has no ','")?
-			.split('.')
-			.collect::<Vec<&str>>()
-			.iter()
-			.map(|s| (*s).parse::<u32>().unwrap())
-			.collect();
+    	//TODO chrono::NaiveDateTime::parse_from_str(s: &str, fmt: &str) (done)
 
-		#[allow(clippy::cast_possible_wrap)]
-		Ok(chrono::Date::<Local>::from_utc(
-			NaiveDate::from_ymd(date_str[2] as i32, date_str[1], date_str[0]),
-			Utc.fix(),
-		).and_hms(0, 0, 0).timestamp())
+		let date_string = self.pages.iter()
+			.map(|p| p.texts)
+			.map(|t| {
+				t.iter().map(|t| t.text.starts_with("Datum: "))
+			}).next()
+			.ok_or("Couldn't find the date string in PDF")?
+			.collect::<&str>();
+
+		println!(date_string);
+
+		let date_begin = date_string.rfind(' ').ok_or("Date string malformed")?;
+
+		Ok(
+			chrono::NaiveDateTime::parse_from_str(&date_string[date_begin..], "%d.%m.%Y")?
+				.timestamp_millis()
+		)
+
+		// let date_str: Vec<u32> = pdf[date_idx_start..date_idx_end].split(", ")
+		// 	.last()
+		// 	.ok_or("date string has no ','")?
+		// 	.split('.')
+		// 	.collect::<Vec<&str>>()
+		// 	.iter()
+		// 	.map(|s| (*s).parse::<u32>().unwrap())
+		// 	.collect();
+
+		// #[allow(clippy::cast_possible_wrap)]
+		// Ok(chrono::Date::<Local>::from_utc(
+		// 	NaiveDate::from_ymd(date_str[2] as i32, date_str[1], date_str[0]),
+		// 	Utc.fix(),
+		// ).and_hms(0, 0, 0).timestamp())
 	}
 }
 
@@ -88,22 +115,53 @@ type ColumnarTable<'a> = Vec<Vec<CellContent<'a>>>;
 
 impl TableObjects {
 	fn new(objects: PageStream) -> Result<Self, Box<dyn Error>> {
-		let mut vertical_borders = Vec::new();
-		let mut horizontal_borders = Vec::new();
+		let mut vertical_borders: Vec<Border> = Vec::new();
+		let mut horizontal_borders = HashMap::new();
 
 		for line in objects.lines {
 		    if line.start.y == line.end.y {
-		        horizontal_borders.push(line.start.y)
+		        //horizontal_borders.push(line.start.y)
+				horizontal_borders.entry(line.start.y).and_modify(|x: &mut Vec<i64>| {
+					x.push(line.start.x);
+					x.push(line.end.x)
+				}).or_insert(Vec::new());
 		    } else if line.start.x == line.end.x {
 		        vertical_borders.push(line.start.y)
+				// vertical_borders.entry(line.start.x).and_modify(|y: &mut Vec<i64>| {
+				// 	y.push(line.start.y);
+				// 	y.push(line.end.y)
+				// }).or_insert(Vec::new());
 		    } else {
 		        return Err("While parsing pdf: line is diagonal".into())
 		    };
 		};
 
+		//TODO concatenate the fragmented lines possibly with a hashmap
+		// let mut vertical_borders = vertical_borders.iter()
+		// 	.map(find_points)
+		// 	.collect::<Vec<Line>>();
+
+		let mut horizontal_borders = horizontal_borders.iter()
+			.map(|l| {
+				let start = Point::new(*l.1.iter().min().unwrap(), *l.0);
+				let end = Point::new(*l.1.iter().max().unwrap(), *l.0);
+				Line::new(start, end)
+			})
+			.collect::<Vec<Line>>();
+
 		//TODO get rid of the random short dividers within some cells. Possibly by grouping them by
 		// length and removing the groups which don't add to a multiple of 7 and by checking if they
 		// are on top of one of another.
+
+		let max_length = horizontal_borders.iter()
+			.map(|l| l.len())
+			.max()
+			.ok_or("couldn't find any horizontal boarders")?;
+
+		let horizontal_borders = horizontal_borders.iter()
+			.filter(|l| l.len() + 5 > (max_length + 10))
+			.map(|l| l.start.y)
+			.collect::<Vec<Border>>();
 
 		if horizontal_borders.len() != 7 {
 			Err(format!("number of horizontal lines is expected to exactly 7, got {}", horizontal_borders.len()).into())
@@ -223,6 +281,9 @@ impl PageStream {
 		//TODO get the regions of the tables, by finding the coordinates of the "Block" text and
 		// use it to divide the lines on the page. Maybe even find the line below
 		// '5:  15:15\n- 16:45' as the second divider
+
+
+
 		todo!()
 	}
 }
