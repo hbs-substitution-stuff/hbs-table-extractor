@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::Path;
 use encoding_rs::WINDOWS_1252;
@@ -12,20 +12,22 @@ use chrono::{Local, NaiveDate, Utc, Offset};
 /// The parser itself
 pub struct PdfScheduleParser {
 	document: Document,
-	pages: Vec<PageStream>,
+	pub pages: Vec<PageStream>,
 }
 
 /// An object collection
-struct ObjectStream(Vec<PdfTableObject>);
+#[derive(Clone)]
+pub struct ObjectStream(Vec<PdfTableObject>);
 
 /// The text in the pdf
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Text {
 	text: String,
 	position: Point,
 }
 
 /// Just a 2D point
+#[derive(Clone, Debug)]
 struct Point {
 	x: i64,
 	y: i64,
@@ -33,14 +35,14 @@ struct Point {
 
 
 /// The lines in the pdf, e.g. the lines that a table is made out of
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Line {
 	start: Point,
 	end: Point,
 }
 
 /// All pdf objects relevant for parsing the schedule
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum PdfTableObject {
 	Line(Line),
 	Text(Text),
@@ -48,7 +50,16 @@ enum PdfTableObject {
 
 impl PdfTableObject {
 	fn in_bound(&self, bound_top: i64, bound_bottom: i64) -> bool {
-		todo!()
+		let in_bound = |o| o < bound_top && o > bound_bottom;
+
+		match self {
+			PdfTableObject::Text(t) => {
+				in_bound(t.position.y)
+			},
+			PdfTableObject::Line(l) => {
+				in_bound(l.start.y) && in_bound(l.end.y)
+			},
+		}
 	}
 
 	fn is_text(&self) -> bool {
@@ -77,7 +88,7 @@ type Border = i64;
 
 
 /// The pdf objects corresponding to exactly one table
-struct TableObjects {
+pub struct TableObjects {
 	vertical_borders: Vec<Border>,
 	horizontal_borders: Vec<Border>,
 	texts: Vec<Text>,
@@ -122,22 +133,21 @@ impl PdfScheduleParser {
 		})
 	}
 
-	fn extract_date(&self) -> Result<i64, Box<dyn Error>> {
+	pub fn extract_date(&self) -> Result<i64, Box<dyn Error>> {
 		let date_string = self.pages.iter()
 			.map(|p| p.texts())
 			.flatten()
-			.filter(|t| t.text.starts_with("Datum: "))
+			.filter(|t| t.text.contains("Datum: "))
 			.next()
 			.ok_or("Couldn't find the date string in PDF")?
 			.text
 			.as_str();
 
-		println!("{}", date_string);
-
-		let date_begin = date_string.rfind(' ').ok_or("Date string malformed")?;
+		let date_begin = date_string.rfind(' ').ok_or("Date string malformed")? + 1;
 
 		Ok(
-			chrono::NaiveDateTime::parse_from_str(&date_string[date_begin..], "%d.%m.%Y")?
+			chrono::NaiveDate::parse_from_str(&date_string[date_begin..], "%d.%m.%Y")?
+				.and_hms_milli(0, 0, 0, 0)
 				.timestamp_millis()
 		)
 	}
@@ -149,17 +159,17 @@ type PageStream = ObjectStream;
 
 impl TableObjects {
 	fn new(objects: ObjectStream) -> Result<Self, Box<dyn Error>> {
-		let mut vertical_borders: Vec<Border> = Vec::new();
+		let mut vertical_borders: HashSet<Border> = HashSet::new();
 		let mut horizontal_borders = HashMap::new();
 
 		for line in objects.lines() {
 		    if line.horizontal() {
-				horizontal_borders.entry(line.start.y).and_modify(|x: &mut Vec<i64>| {
-					x.push(line.start.x);
-					x.push(line.end.x)
-				}).or_insert(Vec::new());
+				let mut x = horizontal_borders.entry(line.start.y)
+					.or_insert(Vec::new());
+				x.push(line.start.x);
+				x.push(line.end.x);
 		    } else if line.vertical() {
-		        vertical_borders.push(line.start.y)
+		        vertical_borders.insert(line.start.x);
 		    } else {
 		        return Err("While parsing pdf: line is diagonal".into())
 		    };
@@ -167,40 +177,59 @@ impl TableObjects {
 
 		let mut horizontal_borders = horizontal_borders.iter()
 			.map(|l| {
+				//println!("{:?}", l.0);
+				//println!("{:?}", l.1);
 				let start = Point {x: *l.1.iter().min().unwrap(), y: *l.0};
 				let end = Point {x: *l.1.iter().max().unwrap(), y: *l.0};
 				Line {start, end}
 			})
 			.collect::<Vec<Line>>();
 
-		let max_length = horizontal_borders.iter()
-			.map(|l| l.len())
-			.max()
-			.ok_or("couldn't find any horizontal boarders")?;
+		//let max_length = horizontal_borders.iter()
+		//	.map(|l| l.len())
+		//	.max()
+		//	.ok_or("couldn't find any horizontal boarders")?;
 
-		let horizontal_borders = horizontal_borders.iter()
-			.filter(|l| l.len() + 5 > (max_length + 10))
-			.map(|l| l.start.y)
-			.collect::<Vec<Border>>();
+		//let horizontal_borders = horizontal_borders.iter()
+		//	.filter(|l| l.len() + 5 > (max_length + 10))
+		//	.map(|l| l.start.y)
+		//	.collect::<Vec<Border>>();
+
+		horizontal_borders.sort_by(|l1, l2| l2.len().cmp(&l1.len()));
+
+		//println!("{:?}", horizontal_borders.iter().map(|l| l.len()).collect::<Vec<i64>>());
+
+		horizontal_borders.truncate(7);
+
+		let horizontal_borders = horizontal_borders.drain(..).map(|l| l.start.y);
+
+
+		//println!("{}", vertical_borders.len());
 
 		if horizontal_borders.len() != 7 {
 			return Err(format!("number of horizontal lines is expected to exactly 7, got {}", horizontal_borders.len()).into());
 		}
 
+		//println!("{:?}", vertical_borders);
+
+		//TODO add a check to check the vertical borders against the number of classes
+
+		let vertical_borders = vertical_borders.into_iter();
+
 		Ok(Self {
-			vertical_borders,
-			horizontal_borders,
+			vertical_borders: vertical_borders.collect(),
+			horizontal_borders: horizontal_borders.collect(),
 			texts: objects.texts().map(|t| t.clone()).collect(),
 		})
 	}
 
-	fn generate_table(&mut self) -> Result<ColumnarTable, Box<dyn Error>> {
+	pub fn generate_table(&mut self) -> Result<ColumnarTable, Box<dyn Error>> {
 		self.horizontal_borders.sort();
 		self.horizontal_borders.reverse();
 		self.vertical_borders.sort();
 
-		println!("{:?}", self.horizontal_borders);
-		println!("{:?}", self.vertical_borders);
+		//println!("{:?}", self.horizontal_borders);
+		//println!("{:?}", self.vertical_borders);
 
 		let mut table: ColumnarTable = vec![vec![Vec::new(); 7]; self.vertical_borders.len() - 1];
 
@@ -211,7 +240,7 @@ impl TableObjects {
 						if text.position.y > *h_border {
 							table[v_idx - 1][h_idx].push(&text.text);
 							break
-						}todo!()
+						}
 					}
 					break
 				}
@@ -308,7 +337,7 @@ impl ObjectStream {
 		self.0.iter().filter_map(|o| if let PdfTableObject::Text(t) = o {Some(t)} else {None})
 	}
 
-	fn extract_table_objects(&mut self) -> Vec<TableObjects> {
+	pub fn extract_table_objects(&mut self) -> Vec<TableObjects> {
 		//TODO get the regions of the tables, by finding the coordinates of the "Block" text and
 		// use it to divide the lines on the page. Maybe even find the line below
 		// '5:  15:15\n- 16:45' as the second divider
@@ -334,7 +363,7 @@ impl ObjectStream {
 		//TODO adjust bottom_limit to extend to the bottom line and add a tolerance
 		let mut line_deltas = Vec::new();
 
-		for limit in bottom_limit_y {
+		for limit in &bottom_limit_y {
 			line_deltas.push(self.lines().filter_map(|line| {
 				let delta = line.start.y - limit;
 
@@ -343,7 +372,7 @@ impl ObjectStream {
 				} else {
 					None
 				}
-			}).max())
+			}).max().unwrap())
 		}
 
 		if line_deltas.len() != bottom_limit_y.len() {
@@ -353,25 +382,25 @@ impl ObjectStream {
 		let mut line_deltas = line_deltas.into_iter();
 
 		let bottom_limit_y = bottom_limit_y.drain(..)
-			.map(|l| l + (line_deltas.next().unwrap()) - 4 /* add a tolerance of -4 */)
+			.map(|l| l + line_deltas.next().unwrap() - 4 /* add a tolerance of -4 */)
 			.collect::<Vec<i64>>();
 
 		//TODO make a function which takes a two limits and the table objects and returns only objects in bound
 
-		let mut extracted_tables = Vec::new();
+		let mut extracted_tables = vec![ObjectStream(Vec::new()); top_limit_y.len()];
 
-		for (idx, object) in self.0.drain(..).enumerate() {
-			extracted_tables.push(ObjectStream(Vec::new()));
-
-			for (top_bound, bottom_bound) in top_limit_y.iter().zip(&bottom_limit_y) {
+		for object in self.0.drain(..) {
+			for (idx, (top_bound, bottom_bound)) in top_limit_y.iter().zip(&bottom_limit_y).enumerate() {
 				if object.in_bound(*top_bound, *bottom_bound) {
 					extracted_tables[idx].0.push(object.clone());
 				}
 			}
 		}
 
+		//println!("{:?}", extracted_tables.drain(..).map(|a| a.0).collect::<Vec<Vec<PdfTableObject>>>().iter().map(|o| o.len()).collect::<Vec<usize>>());
+
 		extracted_tables.drain(..)
-			.map(|o| TableObjects::new(o))
+			.map(|o| TableObjects::new(o).unwrap())
 			.collect()
 	}
 }
