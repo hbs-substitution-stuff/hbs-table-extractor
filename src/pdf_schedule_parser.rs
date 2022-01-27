@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::Path;
 use lopdf::{Document, Stream};
@@ -5,7 +6,6 @@ use std::error::Error;
 use std::iter::FilterMap;
 use std::slice::Iter;
 use geo::{Line, Point};
-use chrono::NaiveDate;
 
 
 /// the parser itself
@@ -19,10 +19,10 @@ pub struct PdfScheduleParser {
 pub struct PageObjects(Vec<TableObject>);
 
 /// the text in the pdf
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 struct Text {
 	text: String,
-	position: Point<T>,
+	position: Point<i64>,
 }
 
 impl Text {
@@ -33,9 +33,9 @@ impl Text {
 }
 
 /// all relevant pdf objects
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
 enum TableObject {
-	Line(Line<T>),
+	Line(Line<i64>),
 	Text(Text),
 }
 
@@ -45,7 +45,7 @@ impl TableObject {
 
 		match self {
 			Self::Text(t) => {
-				between(t.position.y)
+				between(t.position.y())
 			},
 			Self::Line(l) => {
 				between(l.start.y) && between(l.end.y)
@@ -54,7 +54,7 @@ impl TableObject {
 	}
 
 	// only works left to right
-	fn intersects_y_border(&self, border: i64) -> bool {
+	fn intersects_x_border(&self, border: i64) -> bool {
 		match self {
 			Self::Line(l) => if l.dy() == 0 {
 				border >= l.start.x && border <= l.end.x
@@ -81,14 +81,20 @@ impl TableObject {
 
 	fn y(&self) -> i64 {
 		match self {
-			Self::Text(t) => t.position.x(),
+			Self::Text(t) => t.position.y(),
 			Self::Line(l) => if l.dy() == 0 { l.start.y } else { panic!("line is vertical") },
 		}
 	}
 }
 
 trait TableObjectIter {
-	fn lines<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Line<T>>> {
+	fn lines<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Line<i64>>>;
+
+	fn texts<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Text>>;
+}
+
+impl TableObjectIter for PageObjects {
+	fn lines<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Line<i64>>> {
 		self.0.iter().filter_map(|o| if let TableObject::Line(l) = o {Some(l)} else {None})
 	}
 
@@ -97,12 +103,18 @@ trait TableObjectIter {
 	}
 }
 
-impl TableObjectIter for PageObjects {}
+impl TableObjectIter for TableObjects {
+	fn lines<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Line<i64>>> {
+		self.0.iter().filter_map(|o| if let TableObject::Line(l) = o {Some(l)} else {None})
+	}
 
-impl TableObjectIter for TableObjects {}
+	fn texts<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Text>> {
+		self.0.iter().filter_map(|o| if let TableObject::Text(t) = o {Some(t)} else {None})
+	}
+}
 
 impl TableObjectIter for TableColumn {
-	fn lines<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Line<T>>> {
+	fn lines<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Line<i64>>> {
 		self.column.iter().filter_map(|o| if let TableObject::Line(l) = o {Some(l)} else {None})
 	}
 
@@ -151,8 +163,16 @@ impl PdfScheduleParser {
 		)
 	}
 
-	pub fn extract_tables() -> Vec<Table> {
-		todo!()
+	pub fn extract_tables(&self) -> Vec<Table> {
+		self.pages.iter()
+			.map(|p| p.extract_table_objects())
+			.flatten()
+			.map(|t: TableObjects| t.extract_columns())
+			.map(|mut c| c.drain(..)
+				.map(|mut t| t.generate_column())
+				.collect()
+			)
+			.collect()
 	}
 }
 
@@ -211,8 +231,8 @@ impl PageObjects {
 						);
 
 						let end = Point::new(
-							x: l_ops[0].as_f64().unwrap() as i64,
-							y: l_ops[1].as_f64().unwrap() as i64,
+							l_ops[0].as_f64().unwrap() as i64,
+							l_ops[1].as_f64().unwrap() as i64,
 						);
 
 						objects.push(TableObject::Line(Line::new(start, end)))
@@ -224,20 +244,26 @@ impl PageObjects {
 			}
 		}
 
-		Ok(Self(objects))
+		let mut result = HashSet::new();
+
+		for object in objects {
+			result.insert(object);
+		}
+
+		Ok(Self(result.drain().collect()))
 	}
 
 	fn extract_table_objects(&self) -> Vec<TableObjects> {
 		let mut top_limits = self.texts()
 			.filter(|t| t.text == "Block")
-			.map(|t| t.position.y + 4 /* add a tolerance of 4 */)
+			.map(|t| t.position.y() + 4 /* add a tolerance of 4 */)
 			.collect::<Vec<i64>>();
 
 		top_limits.sort();
 
 		let mut bottom_limits = self.texts()
 			.filter(|t| t.text.contains("15:15"))
-			.map(|t| t.position.y)
+			.map(|t| t.position.y())
 			.collect::<Vec<i64>>();
 
 		bottom_limits.sort();
@@ -251,10 +277,10 @@ impl PageObjects {
 		let mut line_deltas = Vec::new();
 
 		for limit in &bottom_limits {
-			line_deltas.push(self.lines().filter_map(|line| {
-				let delta = line.start.y - limit;
+			line_deltas.push(self.lines().filter_map(|l| {
+				let delta = l.start.y - limit;
 
-				if line.horizontal() && delta.is_negative() {
+				if l.dy() == 0 && delta.is_negative() {
 					Some(delta)
 				} else {
 					None
@@ -275,7 +301,7 @@ impl PageObjects {
 
 		let mut extracted_tables = vec![TableObjects(Vec::new()); top_limits.len()];
 
-		for object in self.0 {
+		for object in &self.0 {
 			for (idx, (top_bound, bottom_bound)) in top_limits.iter().zip(&bottom_limit_y).enumerate() {
 				if object.between_y(*top_bound, *bottom_bound) {
 					extracted_tables[idx].0.push(object.clone());
@@ -287,6 +313,7 @@ impl PageObjects {
 	}
 }
 
+#[derive(Clone)]
 struct TableObjects(Vec<TableObject>);
 
 impl TableObjects {
@@ -300,29 +327,31 @@ impl TableObjects {
 
 		for header in self.texts() {
 			// TODO merge with between_y function
-			if header.position.y() < header_height + 2 && /* 4 tolerance in total */
-				header.position.y() > limit_bottom - 2 {
-				columns.push(
-					TableColumn {
-						header: header.clone(),
-						column: Vec::new(),
-					}
-				);
-			}
-		}
-
-		for mut column in columns {
-			for object in self.0 {
-				if object.intersects_y_border(column.header.position.y()) {
-					column.column.push(object);
+			if header.position.y() < &header_height + 2 && /* 4 tolerance in total */
+				header.position.y() > &header_height - 2 {
+				if header.text != "Block" {
+					columns.push(
+						TableColumn {
+							header: header.to_owned(),
+							column: Vec::new(),
+						}
+					);
 				}
 			}
 		}
 
-		for mut column in columns {
+		for i in 0..columns.len() {
+			for object in &self.0 {
+				if object.intersects_x_border(columns[i].header.position.x()) {
+					columns[i].column.push(object.clone());
+				}
+			}
+		}
+
+		for i in 0..columns.len() {
 			for text in self.texts() {
-				if text.between_x(column.start(), column.end()) {
-					column.column.push(TableObject::Text(text.clone()));
+				if text.between_x(columns[i].start(), columns[i].end()) {
+					columns[i].column.push(TableObject::Text(text.clone()));
 				}
 			}
 		}
@@ -340,12 +369,14 @@ impl TableColumn {
 	fn generate_column(&mut self) -> Vec<Vec<String>> {
 		// remove all vertical lines as they are not needed and interfere with the next steps
 		self.column = self.column.drain(..).filter(|o| {
-			!if let TableObject::Line(o) = l {
-				o.dy() != 0
+			!if let TableObject::Line(l) = o {
+				l.dy() != 0
 			} else {
 				false
 			}
 		}).collect();
+
+		//println!("{}, {}", self.header.text, self.header.position.x());
 
 		// TODO remove the line segments before the extension line segments
 		//self.column.sort_by(|l1, l2| l2.y().cmp(&l1.y()));
@@ -353,39 +384,70 @@ impl TableColumn {
 		let mut lines = self.lines().collect::<Vec<&Line<i64>>>();
 		lines.sort_by(|l1, l2| l2.start.y.cmp(&l1.start.y));
 
+		//println!("{}", lines.len());
+
 		let texts = self.texts().map(|t| TableObject::Text(t.clone()));
 
 		let mut offset = lines.iter();
 		offset.next();
 
-		let spacing = lines.iter()
+		let mut spacing = lines.iter()
 			.zip(offset)
 			.map(|(l, n)| {
-				println!("should be positive (if not reverse sorting): {}", line.start.y - next.start.y);
-				line.start.y - next.start.y
+				//println!("{}", l.start.y - n.end.y);
+				l.start.y - n.start.y
 			}).collect::<Vec<i64>>();
+
+		//println!("{}", spacing.len());
 
 		let smallest_space =  {
 			let mut spacing_sorted = spacing.clone();
 			spacing_sorted.sort();
 			spacing_sorted.reverse();
-			spacing_sorted.truncate(7);
-			spacing_sorted[6]
+			spacing_sorted.truncate(6);
+			spacing_sorted[5]
 		};
 
+		// eiter put in front or at end
+		spacing.push(smallest_space);
 
-		
-
-		let cleaned_column = lines.iter()
+		let mut cleaned_column = lines.iter()
 			.zip(spacing.iter())
-			.filter(|(_, s)| s > &&smallest_space)
+			.filter(|(_, s)| *s >= &smallest_space)
 			.map(|(l, _)| TableObject::Line(l.to_owned().to_owned()))
 			.chain(texts)
 			.collect::<Vec<TableObject>>();
 
-		// TODO generate column with the rest through sorting
+		// sanity check
+		//println!("{}", self.texts().count());
+		if (cleaned_column.len() - self.texts().count()) != 7 {
+			panic!("not exactly 7 lines");
+		}
 
-		todo!()
+		cleaned_column.sort_by(|l1, l2| l2.y().cmp(&l1.y()));
+
+		//println!("{:?}", cleaned_column);
+
+		let mut result = vec![Vec::new(); 7];
+
+		// sanity check
+		if let TableObject::Line(_) = cleaned_column[0] {
+			panic!("expected header text");
+		}
+
+		//cleaned_column.remove(0);
+
+		let mut i = 0;
+
+		for object in cleaned_column {
+			//println!("i: {}", i as usize);
+			match object {
+				TableObject::Line(_) => i += 1,
+				TableObject::Text(t) => result[i as usize].push(t.text),
+			}
+		}
+
+		result
 	}
 
 	fn start(&self) -> i64 {
