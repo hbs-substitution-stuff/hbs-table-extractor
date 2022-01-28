@@ -16,7 +16,7 @@ pub struct PdfScheduleParser {
 
 /// all objects on a page
 #[derive(Clone)]
-pub struct PageObjects(Vec<TableObject>);
+struct PageObjects(Vec<TableObject>);
 
 /// the text in the pdf
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -79,59 +79,23 @@ impl TableObject {
 		}
 	}
 
-	fn y(&self) -> i64 {
+	fn y(&self) -> Result<i64, Box<dyn Error>> {
 		match self {
-			Self::Text(t) => t.position.y(),
-			Self::Line(l) => if l.dy() == 0 { l.start.y } else { panic!("line is vertical") },
+			Self::Text(t) => Ok(t.position.y()),
+			Self::Line(l) => if l.dy() == 0 { Ok(l.start.y) } else { Err("line is vertical".into()) },
 		}
 	}
 }
 
-trait TableObjectIter {
-	fn lines<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Line<i64>>>;
-
-	fn texts<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Text>>;
-}
-
-impl TableObjectIter for PageObjects {
-	fn lines<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Line<i64>>> {
-		self.0.iter().filter_map(|o| if let TableObject::Line(l) = o {Some(l)} else {None})
-	}
-
-	fn texts<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Text>> {
-		self.0.iter().filter_map(|o| if let TableObject::Text(t) = o {Some(t)} else {None})
-	}
-}
-
-impl TableObjectIter for TableObjects {
-	fn lines<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Line<i64>>> {
-		self.0.iter().filter_map(|o| if let TableObject::Line(l) = o {Some(l)} else {None})
-	}
-
-	fn texts<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Text>> {
-		self.0.iter().filter_map(|o| if let TableObject::Text(t) = o {Some(t)} else {None})
-	}
-}
-
-impl TableObjectIter for TableColumn {
-	fn lines<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Line<i64>>> {
-		self.column.iter().filter_map(|o| if let TableObject::Line(l) = o {Some(l)} else {None})
-	}
-
-	fn texts<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Text>> {
-		self.column.iter().filter_map(|o| if let TableObject::Text(t) = o {Some(t)} else {None})
-	}
-}
-
 impl PdfScheduleParser {
-	pub(crate) fn new<T: AsRef<Path> + AsRef<OsStr>>(path: T) -> Result<Self, Box<dyn std::error::Error>> {
-		let document = Document::load(path).unwrap();
+	pub(crate) fn new<T: AsRef<Path> + AsRef<OsStr>>(path: T) -> Result<Self, Box<dyn Error>> {
+		let document = Document::load(path)?;
 
 		let mut pages = Vec::new();
 
 		for page in document.page_iter() {
 			for object_id in document.get_page_contents(page) {
-				let object = document.get_object(object_id).unwrap();
+				let object = document.get_object(object_id)?;
 
 				if let Ok(stream) = object.as_stream() {
 					pages.push(PageObjects::from_stream(stream)?);
@@ -163,16 +127,17 @@ impl PdfScheduleParser {
 		)
 	}
 
-	pub fn extract_tables(&self) -> Vec<Table> {
-		self.pages.iter()
+	pub fn extract_tables(&mut self) -> Result<Vec<Table>, Box<dyn Error>> {
+		Ok(self.pages.iter()
 			.map(|p| p.extract_table_objects())
+			.collect::<Result<Vec<Vec<TableObjects>>, Box<dyn Error>>>()?.iter()
 			.flatten()
-			.map(|t: TableObjects| t.extract_columns())
+			.map(|t| t.extract_columns())
 			.map(|mut c| c.drain(..)
 				.map(|mut t| t.generate_column())
-				.collect()
+				.collect::<Result<Vec<Vec<Vec<String>>>, Box<dyn Error>>>()
 			)
-			.collect()
+			.collect::<Result<Vec<Table>, Box<dyn Error>>>()?)
 	}
 }
 
@@ -184,9 +149,9 @@ impl PageObjects {
 	fn from_stream(stream: &Stream) -> Result<Self, Box<dyn std::error::Error>> {
 		let mut stream = stream.to_owned();
 		stream.decompress();
-		let stream = stream.decode_content().unwrap();
+		let stream = stream.decode_content()?;
 
-		let mut objects = Vec::new();
+		let mut objects = HashSet::new();
 
 
 		//find all Tj's and their position through the previous Td's and put them as a Text struct in an array
@@ -202,15 +167,15 @@ impl PageObjects {
 
 						let text = Document::decode_text(
 							Some("WinAnsiEncoding"),
-							tj_ops[0].as_str().unwrap()
+							tj_ops[0].as_str()?
 						);
 
 						let position = Point::new(
-							td_ops[0].as_f64().unwrap() as i64,
-							td_ops[1].as_f64().unwrap() as i64,
+							td_ops[0].as_f64()? as i64,
+							td_ops[1].as_f64()? as i64,
 						);
 
-						objects.push(TableObject::Text(Text {
+						objects.insert(TableObject::Text(Text {
 							text,
 							position
 						}));
@@ -226,16 +191,16 @@ impl PageObjects {
 						let l_ops = &op.operands;
 
 						let start = Point::new(
-							m_ops[0].as_f64().unwrap() as i64,
-							m_ops[1].as_f64().unwrap() as i64,
+							m_ops[0].as_f64()? as i64,
+							m_ops[1].as_f64()? as i64,
 						);
 
 						let end = Point::new(
-							l_ops[0].as_f64().unwrap() as i64,
-							l_ops[1].as_f64().unwrap() as i64,
+							l_ops[0].as_f64()? as i64,
+							l_ops[1].as_f64()? as i64,
 						);
 
-						objects.push(TableObject::Line(Line::new(start, end)))
+						objects.insert(TableObject::Line(Line::new(start, end)));
 					} else {
 						return Err("While parsing pdf: m expected before l".into());
 					}
@@ -244,16 +209,10 @@ impl PageObjects {
 			}
 		}
 
-		let mut result = HashSet::new();
-
-		for object in objects {
-			result.insert(object);
-		}
-
-		Ok(Self(result.drain().collect()))
+		Ok(Self(objects.drain().collect()))
 	}
 
-	fn extract_table_objects(&self) -> Vec<TableObjects> {
+	fn extract_table_objects(&self) -> Result<Vec<TableObjects>, Box<dyn Error>> {
 		let mut top_limits = self.texts()
 			.filter(|t| t.text == "Block")
 			.map(|t| t.position.y() + 4 /* add a tolerance of 4 */)
@@ -270,7 +229,7 @@ impl PageObjects {
 
 		// Sanity check
 		if bottom_limits.len() != top_limits.len() {
-			panic!("bottom and top limits don't match up");
+			return Err("bottom and top limits don't match up".into())
 		}
 
 		// adjust bottom_limit to extend to the bottom line and add a tolerance
@@ -285,19 +244,19 @@ impl PageObjects {
 				} else {
 					None
 				}
-			}).max().unwrap())
+			}).max().ok_or("table bound could not be found")?)
 		}
 
-		// Sanity check
-		if line_deltas.len() != bottom_limits.len() {
-			panic!("something went wrong")
-		}
+		// // Sanity check
+		// if line_deltas.len() != bottom_limits.len() {
+		// 	return Err("something went wrong".into())
+		// }
 
 		let mut line_deltas = line_deltas.into_iter();
 
 		let bottom_limit_y = bottom_limits.drain(..)
-			.map(|l| l + line_deltas.next().unwrap() - 4 /* add a tolerance of -4 */)
-			.collect::<Vec<i64>>();
+			.map(|l| line_deltas.next().map(|d| l + d - 4 /* add a tolerance of -4 */))
+			.collect::<Option<Vec<i64>>>().ok_or("line_deltas has a different length than bottom_limits")?;
 
 		let mut extracted_tables = vec![TableObjects(Vec::new()); top_limits.len()];
 
@@ -309,7 +268,15 @@ impl PageObjects {
 			}
 		}
 
-		extracted_tables
+		Ok(extracted_tables)
+	}
+
+	fn lines<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Line<i64>>> {
+		self.0.iter().filter_map(|o| if let TableObject::Line(l) = o {Some(l)} else {None})
+	}
+
+	fn texts<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Text>> {
+		self.0.iter().filter_map(|o| if let TableObject::Text(t) = o {Some(t)} else {None})
 	}
 }
 
@@ -358,6 +325,14 @@ impl TableObjects {
 
 		columns
 	}
+
+	fn lines<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Line<i64>>> {
+		self.0.iter().filter_map(|o| if let TableObject::Line(l) = o {Some(l)} else {None})
+	}
+
+	fn texts<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Text>> {
+		self.0.iter().filter_map(|o| if let TableObject::Text(t) = o {Some(t)} else {None})
+	}
 }
 
 struct TableColumn {
@@ -366,7 +341,7 @@ struct TableColumn {
 }
 
 impl TableColumn {
-	fn generate_column(&mut self) -> Vec<Vec<String>> {
+	fn generate_column(&mut self) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
 		// remove all vertical lines as they are not needed and interfere with the next steps
 		self.column = self.column.drain(..).filter(|o| {
 			!if let TableObject::Line(l) = o {
@@ -421,10 +396,16 @@ impl TableColumn {
 		// sanity check
 		//println!("{}", self.texts().count());
 		if (cleaned_column.len() - self.texts().count()) != 7 {
-			panic!("not exactly 7 lines");
+			return Err("not exactly 7 lines".into())
 		}
 
-		cleaned_column.sort_by(|l1, l2| l2.y().cmp(&l1.y()));
+		// don't remove this, needed in combination with the sort by
+		if cleaned_column.iter()
+			.fold(false, |a, t| if let TableObject::Line(l) = t { l.dy() != 0} else { false }) {
+			return Err("vertical line in vector".into())
+		}
+
+		cleaned_column.sort_by(|l1, l2| l2.y().unwrap().cmp(&l1.y().unwrap()));
 
 		//println!("{:?}", cleaned_column);
 
@@ -432,7 +413,7 @@ impl TableColumn {
 
 		// sanity check
 		if let TableObject::Line(_) = cleaned_column[0] {
-			panic!("expected header text");
+			return Err("expected header text".into())
 		}
 
 		//cleaned_column.remove(0);
@@ -447,7 +428,7 @@ impl TableColumn {
 			}
 		}
 
-		result
+		Ok(result)
 	}
 
 	fn start(&self) -> i64 {
@@ -456,5 +437,13 @@ impl TableColumn {
 
 	fn end(&self) -> i64 {
 		self.lines().map(|l| l.end.x).max().expect("no lines in field 'column'")
+	}
+
+	fn lines<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Line<i64>>> {
+		self.column.iter().filter_map(|o| if let TableObject::Line(l) = o {Some(l)} else {None})
+	}
+
+	fn texts<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Text>> {
+		self.column.iter().filter_map(|o| if let TableObject::Text(t) = o {Some(t)} else {None})
 	}
 }
