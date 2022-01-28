@@ -9,10 +9,7 @@ use geo::{Line, Point};
 
 
 /// the parser itself
-pub struct PdfScheduleParser {
-	document: Document,
-	pages: Vec<PageObjects>,
-}
+pub struct HbsTableExtractor(Vec<PageObjects>);
 
 /// all objects on a page
 #[derive(Clone)]
@@ -63,22 +60,6 @@ impl TableObject {
 		}
 	}
 
-	fn is_text(&self) -> bool {
-		if let Self::Text(_) = self {
-			true
-		} else {
-			false
-		}
-	}
-
-	fn is_line(&self) -> bool {
-		if let Self::Line(_) = self {
-			true
-		} else {
-			false
-		}
-	}
-
 	fn y(&self) -> Result<i64, Box<dyn Error>> {
 		match self {
 			Self::Text(t) => Ok(t.position.y()),
@@ -87,8 +68,8 @@ impl TableObject {
 	}
 }
 
-impl PdfScheduleParser {
-	pub(crate) fn new<T: AsRef<Path> + AsRef<OsStr>>(path: T) -> Result<Self, Box<dyn Error>> {
+impl HbsTableExtractor {
+	pub fn new<T: AsRef<Path> + AsRef<OsStr>>(path: T) -> Result<Self, Box<dyn Error>> {
 		let document = Document::load(path)?;
 
 		let mut pages = Vec::new();
@@ -103,14 +84,11 @@ impl PdfScheduleParser {
 			};
 		};
 
-		Ok(Self {
-			document,
-			pages,
-		})
+		Ok(Self(pages))
 	}
 
 	pub fn extract_date(&self) -> Result<i64, Box<dyn Error>> {
-		let date_string = self.pages.iter()
+		let date_string = self.0.iter()
 			.map(|p| p.texts())
 			.flatten()
 			.find(|t| t.text.contains("Datum: "))
@@ -127,20 +105,23 @@ impl PdfScheduleParser {
 		)
 	}
 
-	pub fn extract_tables(&mut self) -> Result<Vec<Table>, Box<dyn Error>> {
-		Ok(self.pages.iter()
+	pub fn extract_tables(&mut self) -> Result<Vec<Page>, Box<dyn Error>> {
+		Ok(self.0.iter()
 			.map(|p| p.extract_table_objects())
-			.collect::<Result<Vec<Vec<TableObjects>>, Box<dyn Error>>>()?.iter()
-			.flatten()
-			.map(|t| t.extract_columns())
-			.map(|mut c| c.drain(..)
-				.map(|mut t| t.generate_column())
-				.collect::<Result<Vec<Vec<Vec<String>>>, Box<dyn Error>>>()
-			)
-			.collect::<Result<Vec<Table>, Box<dyn Error>>>()?)
+			.collect::<Result<Vec<Vec<TableObjects>>, Box<dyn Error>>>()?
+			.iter()
+			.map(|tc| tc.iter().map(|t| t.extract_columns()))
+			.map(|c|
+				c.map(|mut tt| tt.drain(..)
+					.map(|mut t|
+						t.generate_column()
+					).collect::<Result<Vec<Vec<Vec<String>>>, Box<dyn Error>>>()
+				).collect::<Result<Vec<Vec<Vec<Vec<String>>>>, Box<dyn Error>>>()
+			).collect::<Result<Vec<Page>, Box<dyn Error>>>()?)
 	}
 }
 
+type Page = Vec<Table>;
 type Table = Vec<Column>;
 type Column = Vec<CellContent>;
 type CellContent = Vec<String>;
@@ -326,9 +307,9 @@ impl TableObjects {
 		columns
 	}
 
-	fn lines<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Line<i64>>> {
-		self.0.iter().filter_map(|o| if let TableObject::Line(l) = o {Some(l)} else {None})
-	}
+	// fn _lines<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Line<i64>>> {
+	// 	self.0.iter().filter_map(|o| if let TableObject::Line(l) = o {Some(l)} else {None})
+	// }
 
 	fn texts<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Text>> {
 		self.0.iter().filter_map(|o| if let TableObject::Text(t) = o {Some(t)} else {None})
@@ -351,15 +332,9 @@ impl TableColumn {
 			}
 		}).collect();
 
-		//println!("{}, {}", self.header.text, self.header.position.x());
-
-		// TODO remove the line segments before the extension line segments
-		//self.column.sort_by(|l1, l2| l2.y().cmp(&l1.y()));
-
 		let mut lines = self.lines().collect::<Vec<&Line<i64>>>();
 		lines.sort_by(|l1, l2| l2.start.y.cmp(&l1.start.y));
 
-		//println!("{}", lines.len());
 
 		let texts = self.texts().map(|t| TableObject::Text(t.clone()));
 
@@ -369,11 +344,8 @@ impl TableColumn {
 		let mut spacing = lines.iter()
 			.zip(offset)
 			.map(|(l, n)| {
-				//println!("{}", l.start.y - n.end.y);
 				l.start.y - n.start.y
 			}).collect::<Vec<i64>>();
-
-		//println!("{}", spacing.len());
 
 		let smallest_space =  {
 			let mut spacing_sorted = spacing.clone();
@@ -383,7 +355,6 @@ impl TableColumn {
 			spacing_sorted[5]
 		};
 
-		// eiter put in front or at end
 		spacing.push(smallest_space);
 
 		let mut cleaned_column = lines.iter()
@@ -394,20 +365,17 @@ impl TableColumn {
 			.collect::<Vec<TableObject>>();
 
 		// sanity check
-		//println!("{}", self.texts().count());
 		if (cleaned_column.len() - self.texts().count()) != 7 {
 			return Err("not exactly 7 lines".into())
 		}
 
 		// don't remove this, needed in combination with the sort by
 		if cleaned_column.iter()
-			.fold(false, |a, t| if let TableObject::Line(l) = t { l.dy() != 0} else { false }) {
+			.fold(false, |_, t| if let TableObject::Line(l) = t { l.dy() != 0} else { false }) {
 			return Err("vertical line in vector".into())
 		}
 
 		cleaned_column.sort_by(|l1, l2| l2.y().unwrap().cmp(&l1.y().unwrap()));
-
-		//println!("{:?}", cleaned_column);
 
 		let mut result = vec![Vec::new(); 7];
 
@@ -416,12 +384,9 @@ impl TableColumn {
 			return Err("expected header text".into())
 		}
 
-		//cleaned_column.remove(0);
-
 		let mut i = 0;
 
 		for object in cleaned_column {
-			//println!("i: {}", i as usize);
 			match object {
 				TableObject::Line(_) => i += 1,
 				TableObject::Text(t) => result[i as usize].push(t.text),
