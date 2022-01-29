@@ -3,6 +3,8 @@ use std::ffi::OsStr;
 use std::path::Path;
 use lopdf::{Document, Stream};
 use std::error::Error;
+use std::fs::OpenOptions;
+use std::io::Read;
 use std::iter::FilterMap;
 use std::slice::Iter;
 use geo::{Line, Point};
@@ -70,7 +72,11 @@ impl TableObject {
 
 impl HbsTableExtractor {
 	pub fn new<T: AsRef<Path> + AsRef<OsStr>>(path: T) -> Result<Self, Box<dyn Error>> {
-		let document = Document::load(path)?;
+		Self::load_from(OpenOptions::new().read(true).open(path)?)
+	}
+
+	pub fn load_from<R: Read>(src: R) -> Result<Self, Box<dyn Error>> {
+		let document = Document::load_from(src)?;
 
 		let mut pages = Vec::new();
 
