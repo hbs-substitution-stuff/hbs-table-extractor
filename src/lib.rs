@@ -111,6 +111,22 @@ impl HbsTableExtractor {
 		)
 	}
 
+	// flattens by the first two vectors and joins the most inner one with '\n'
+	pub fn extract_tables_simple(&mut self) -> Result<Vec<Vec<String>>, Box<dyn Error>> {
+		let result = self.extract_tables()?;
+		Ok(result.into_iter().flatten()
+			.flatten()
+			.map(|co| {
+				co.iter()
+					.map(|c| {
+						c.into_iter()
+							.fold(String::new(), |a, b| a + b + "\n")
+					})
+					.collect::<Vec<String>>()
+			})
+			.collect())
+	}
+
 	pub fn extract_tables(&mut self) -> Result<Vec<Page>, Box<dyn Error>> {
 		Ok(self.0.iter()
 			.map(|p| p.extract_table_objects())
