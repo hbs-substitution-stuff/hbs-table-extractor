@@ -1,0 +1,6 @@
+[workspace]
+
+members = [
+    "rust_parser",
+    "tabula_pdf_parser",
+]
