@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::Path;
 use lopdf::{Document, Stream};
@@ -8,6 +8,7 @@ use std::io::Read;
 use std::iter::FilterMap;
 use std::slice::Iter;
 use geo::{Line, Point};
+use substitution_common::{SubstitutionColumn, SubstitutionPDFExtractor, SubstitutionSchedule};
 
 
 /// the parser itself
@@ -432,5 +433,23 @@ impl TableColumn {
 
 	fn texts<'a>(&'a self) -> FilterMap<Iter<'_, TableObject>, fn(&'a TableObject) -> Option<&'a Text>> {
 		self.column.iter().filter_map(|o| if let TableObject::Text(t) = o {Some(t)} else {None})
+	}
+}
+
+impl SubstitutionPDFExtractor for HbsTableExtractor {
+	fn schedule_from_pdf<R: Read>(pdf: R) -> Result<SubstitutionSchedule, Box<dyn Error>> {
+		let mut extractor = HbsTableExtractor::load_from(pdf)?;
+		let mut entries = HashMap::new();
+
+		for column in extractor.extract_tables_simple()? {
+			entries.insert(column[0].clone(),
+						   SubstitutionColumn::from_vec(column[..6].to_vec())
+			);
+		}
+
+		Ok(SubstitutionSchedule {
+			pdf_issue_date: extractor.extract_date()?,
+			entries,
+		})
 	}
 }
