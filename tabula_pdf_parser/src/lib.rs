@@ -5,14 +5,13 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::process::Command;
 use std::str;
-use std::time::SystemTime;
 
 use chrono::{Local, NaiveDate, Offset, Utc};
 use lopdf::Document;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
-use substitution_common::{PDFJsonError, SubstitutionColumn, SubstitutionPDFExtractor, SubstitutionSchedule};
+use substitution_common::{PDFJsonError, SubstitutionColumn, SubstitutionPDFExtractor, SubstitutionSchedule, Substitution};
 use substitution_common::util::{get_random_name, make_temp_dir};
 use tracing::debug;
 
@@ -84,18 +83,9 @@ impl TabulaParser {
 			entries.extend(Self::table_to_substitutions(table));
 		}
 
-		let time_now = SystemTime::now();
-		let since_the_epoch = time_now
-			.duration_since(SystemTime::UNIX_EPOCH)
-			.expect("Time got fucked");
-
-		#[allow(clippy::cast_possible_truncation)]
-			let time_millis = since_the_epoch.as_millis() as u64;
-
 		SubstitutionSchedule {
 			pdf_issue_date: pdf_create_date,
 			entries,
-			struct_time: time_millis,
 		}
 	}
 
@@ -129,9 +119,9 @@ impl TabulaParser {
 
 					if !substitution_part.is_empty() {
 						if let Some(block) = block_option {
-							block.push_str(&format!("\n{}", substitution_part.clone()));
+							block.0.push(substitution_part.clone())
 						} else {
-							let _ = block_option.insert(substitution_part.clone());
+							let _ = block_option.insert(Substitution(vec![substitution_part.clone()]));
 						}
 					}
 				}
