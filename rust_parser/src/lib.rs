@@ -441,9 +441,10 @@ impl SubstitutionPDFExtractor for HbsTableExtractor {
 		let mut extractor = HbsTableExtractor::load_from(pdf)?;
 		let mut entries = HashMap::new();
 
-		for column in extractor.extract_tables_simple()? {
-			entries.insert(column[0].clone(),
-						   SubstitutionColumn::from_vec(column[..6].to_vec())
+		for column in extractor.extract_tables()?.iter().flatten().flatten() {
+			entries.insert(
+				column[0][0].clone(),
+				SubstitutionColumn::from_2d_vec(column[..6].to_vec())?
 			);
 		}
 
